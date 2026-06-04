@@ -19,7 +19,7 @@ from tgdsc.pools import (
 )
 from tgdsc.kinetics import coats_redfern, pool_kinetics, weighted_ea
 from tgdsc.stability import thermostability_index, comprehensive_report
-from tgdsc.deconvolution import fit_peaks, deconvolve_dtg
+from tgdsc.deconvolution import fit_peaks, deconvolve_dtg, deconvolve_pools, batch_deconvolve_pools
 
 
 # Fixtures
@@ -172,3 +172,25 @@ def test_fit_peaks(sample_data):
     assert "result" in result
     assert "components" in result
     assert len(result["components"]) == 3
+
+
+def test_deconvolve_pools(sample_data):
+    result = deconvolve_pools(sample_data, "filimonenko2025", (200, 600))
+    assert "peaks" in result
+    assert len(result["peaks"]) == 4
+    assert result["peaks"][0]["pool"] == "labile"
+    assert "T_center_C" in result["peaks"][0]
+    # Each peak center should be within its pool range
+    for peak in result["peaks"]:
+        if not np.isnan(peak["T_center_C"]):
+            assert peak["T_low_C"] <= peak["T_center_C"] <= peak["T_high_C"]
+
+
+def test_batch_deconvolve_pools(sample_data):
+    samples = {"A": sample_data, "B": sample_data.copy()}
+    df = batch_deconvolve_pools(samples, "filimonenko2025", (200, 600))
+    assert len(df) == 8  # 2 samples x 4 pools
+    assert "sample" in df.columns
+    assert "pool" in df.columns
+    assert "T_center_C" in df.columns
+    assert df["sample"].nunique() == 2

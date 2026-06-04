@@ -315,6 +315,97 @@ def plot_deconvolution(
     return fig
 
 
+def plot_constrained_deconvolution(
+    fit_result: dict,
+    pools_scheme: str = "filimonenko2025",
+    save_path: str | Path | None = None,
+    figsize: tuple[float, float] = (6, 4.5),
+    title: str = "",
+) -> plt.Figure:
+    """Plot constrained pool deconvolution with pool regions shaded."""
+    set_style()
+    from tgdsc.pools import get_pool_scheme
+
+    pools = get_pool_scheme(pools_scheme)
+    x = fit_result.get("x")
+    y = fit_result.get("y")
+    best_fit = fit_result.get("best_fit")
+    components_y = fit_result.get("components_y", [])
+    peaks = fit_result.get("peaks", [])
+
+    if x is None or y is None:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No data", ha="center", va="center")
+        return fig
+
+    fig, ax = plt.subplots(figsize=figsize)
+    pool_colors_bg = ["#fdebd0", "#d5f5e3", "#d6eaf8", "#e8daef"]
+    for i, p in enumerate(pools):
+        ax.axvspan(p["T_low"], p["T_high"], alpha=0.25,
+                   color=pool_colors_bg[i % len(pool_colors_bg)],
+                   label="{} ({}-{}C)".format(p["pool"], p["T_low"], p["T_high"]))
+
+    ax.plot(x, y, "k.", ms=1, alpha=0.3)
+    comp_colors = ["#e67e22", "#27ae60", "#2980b9", "#8e44ad"]
+    for i, comp_y in enumerate(components_y):
+        ax.plot(x, comp_y, "--", color=comp_colors[i % len(comp_colors)], lw=1.0,
+                label="Peak {} ({}C)".format(i+1, peaks[i]["T_center_C"]) if i < len(peaks) else None)
+
+    if best_fit is not None:
+        ax.plot(x, best_fit, "r-", lw=1.2, label="Fit (R²={:.3f})".format(fit_result.get("r2", 0)))
+
+    ax.set_xlabel("Temperature (°C)")
+    ax.set_ylabel("DTG (%/°C)")
+    if title:
+        ax.set_title(title, fontsize=8)
+    ax.legend(frameon=False, fontsize=5.5, loc="upper right")
+    ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+    _save(fig, save_path)
+    return fig
+
+
+def plot_pool_peak_comparison(
+    deconv_df: pd.DataFrame,
+    metric: str = "T_center_C",
+    save_path: str | Path | None = None,
+    figsize: tuple[float, float] = (8, 5),
+) -> plt.Figure:
+    """Compare constrained peak parameters across samples grouped by pool."""
+    set_style()
+    pools = deconv_df["pool"].unique()
+    n_pools = len(pools)
+    metric_labels = {
+        "T_center_C": "Peak center (°C)",
+        "fwhm_C": "Peak FWHM (°C)",
+        "area": "Peak area",
+        "area_fraction": "Area fraction",
+        "r2": "Per-pool R²",
+    }
+
+    fig, axes = plt.subplots(1, n_pools, figsize=figsize, sharey=False)
+    if n_pools == 1:
+        axes = [axes]
+
+    for i, pool in enumerate(pools):
+        ax = axes[i]
+        pool_data = deconv_df[deconv_df["pool"] == pool]
+        vals = pool_data[metric].values
+        names = pool_data["sample"].values
+        colors_list = [COLORS.get(s, "#888888") for s in names]
+        ax.bar(range(len(vals)), vals, color=colors_list, edgecolor="white", lw=0.3)
+        ax.set_xticks(range(len(vals)))
+        ax.set_xticklabels(names, rotation=90, ha="center", fontsize=5)
+        ax.set_title(pool, fontsize=8, color=POOL_FILLS.get(pool, "#333"))
+        ax.set_ylabel(metric_labels.get(metric, metric), fontsize=7)
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+    fig.tight_layout()
+    _save(fig, save_path)
+    return fig
+
+
 def plot_stability_comparison(
     report_df: pd.DataFrame,
     save_path: str | Path | None = None,

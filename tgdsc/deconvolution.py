@@ -225,3 +225,179 @@ def component_summary(fit_result: dict) -> pd.DataFrame:
         total_area = df["area"].sum()
         df["area_fraction"] = df["area"] / total_area if total_area > 0 else np.nan
     return df
+
+
+# --- Constrained pool-aware deconvolution ---
+
+def deconvolve_pools(
+    df: pd.DataFrame,
+    pools_scheme: str | list[dict] = "filimonenko2025",
+    T_range: tuple[float, float] = (190, 640),
+    model_type: str = "gaussian",
+    signal: str = "DTG_percent_per_C",
+) -> dict:
+    """Fit one Gaussian peak independently in each thermal pool range.
+
+    Each pool is fitted separately with a single Gaussian constrained
+    to stay within the pool's temperature boundaries. This ensures:
+    - Peak 0 always represents labile, Peak 1 = stable, etc.
+    - Per-pool R^2 indicates how well a single Gaussian describes that pool
+    - Peak center, width, and area are directly comparable across samples
+
+    Parameters
+    ----------
+    df : DataFrame with Temp_C and signal columns.
+    pools_scheme : pool definition name or list of pool dicts.
+    T_range : overall temperature range.
+    model_type : "gaussian" (symmetric) or "lorentzian" (wider tails).
+    signal : column name to fit.
+
+    Returns
+    -------
+    dict with peaks list, per-pool fit curves, and overall composite.
+    """
+    from .pools import get_pool_scheme
+    from lmfit.models import GaussianModel, LorentzianModel
+    from lmfit import Parameters
+
+    pools = get_pool_scheme(pools_scheme)
+    model_cls = GaussianModel if model_type == "gaussian" else LorentzianModel
+
+    mask = (df["Temp_C"] >= T_range[0]) & (df["Temp_C"] <= T_range[1])
+    x_full = df.loc[mask, "Temp_C"].values.astype(float)
+    y_full = df.loc[mask, signal].values.astype(float)
+
+    if len(x_full) < 20:
+        return {"error": "Too few data points"}
+
+    peaks = []
+    components_y = []
+    composite_y = np.zeros_like(y_full)
+    total_area = 0.0
+
+    for i, p in enumerate(pools):
+        T_low, T_high = p["T_low"], p["T_high"]
+
+        # Extract data within this pool's range
+        pool_mask = (x_full >= T_low) & (x_full <= T_high)
+        x_pool = x_full[pool_mask]
+        y_pool = y_full[pool_mask]
+
+        if len(x_pool) < 10:
+            peaks.append({
+                "pool": p["pool"], "T_low_C": T_low, "T_high_C": T_high,
+                "T_center_C": np.nan, "amplitude": np.nan, "sigma_C": np.nan,
+                "fwhm_C": np.nan, "area": np.nan, "r2": np.nan,
+                "area_fraction": np.nan,
+            })
+            components_y.append(np.zeros_like(x_full))
+            continue
+
+        T_mid = (T_low + T_high) / 2
+        T_width = T_high - T_low
+
+        # Independent single-Gaussian fit for this pool
+        model = model_cls(prefix="p_")
+        params = Parameters()
+        params.add("p_center", value=T_mid, min=T_low, max=T_high)
+        params.add("p_sigma", value=T_width / 6, min=T_width / 20, max=T_width / 2)
+        # Amplitude: estimate from max absolute DTG in pool range
+        amp_guess = float(np.max(np.abs(y_pool))) if len(y_pool) > 0 else 0.01
+        params.add("p_amplitude", value=amp_guess, min=0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = model.fit(y_pool, params, x=x_pool, nan_policy="omit")
+
+        # Extract parameters
+        center = result.params.get("p_center")
+        sigma = result.params.get("p_sigma")
+        amp = result.params.get("p_amplitude")
+
+        c_val = center.value if center else np.nan
+        s_val = sigma.value if sigma else np.nan
+        a_val = amp.value if amp else np.nan
+
+        if model_type == "gaussian":
+            fwhm = 2.35482 * s_val
+            area = a_val * s_val * np.sqrt(2 * np.pi)
+        else:
+            fwhm = 2 * s_val
+            area = np.pi * a_val * s_val
+
+        # Per-pool R^2
+        ss_res = np.nansum((y_pool - result.best_fit) ** 2)
+        ss_tot = np.nansum((y_pool - np.nanmean(y_pool)) ** 2)
+        pool_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+        peaks.append({
+            "pool": p["pool"],
+            "T_low_C": T_low,
+            "T_high_C": T_high,
+            "T_center_C": float(c_val),
+            "amplitude": float(a_val),
+            "sigma_C": float(s_val),
+            "fwhm_C": float(fwhm),
+            "area": float(area),
+            "r2": float(pool_r2) if not np.isnan(pool_r2) else None,
+        })
+
+        if not np.isnan(area):
+            total_area += area
+
+        # Evaluate this peak on the full x-range for composite
+        comp_full = result.eval(x=x_full)
+        components_y.append(comp_full)
+        composite_y += comp_full
+
+    # Area fractions
+    for pe in peaks:
+        pe["area_fraction"] = pe["area"] / total_area if total_area > 0 else np.nan
+
+    # Overall R^2 of composite
+    ss_res = np.nansum((y_full - composite_y) ** 2)
+    ss_tot = np.nansum((y_full - np.nanmean(y_full)) ** 2)
+    overall_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    return {
+        "peaks": peaks,
+        "best_fit": composite_y,
+        "r2": float(overall_r2),
+        "x": x_full,
+        "y": y_full,
+        "components_y": components_y,
+    }
+
+
+def pool_deconv_summary(fit_result: dict) -> pd.DataFrame:
+    """Convert constrained pool deconvolution result to DataFrame."""
+    if "peaks" not in fit_result:
+        return pd.DataFrame()
+    return pd.DataFrame(fit_result["peaks"])
+
+
+def batch_deconvolve_pools(
+    samples: dict[str, pd.DataFrame],
+    pools_scheme: str = "filimonenko2025",
+    T_range: tuple[float, float] = (190, 640),
+    signal: str = "DTG_percent_per_C",
+) -> pd.DataFrame:
+    """Run constrained pool deconvolution on all samples.
+
+    Returns long-format DataFrame with one row per pool per sample.
+    """
+    frames = []
+    for name, df in samples.items():
+        try:
+            result = deconvolve_pools(df, pools_scheme, T_range, signal=signal)
+            if "peaks" in result:
+                p_df = pd.DataFrame(result["peaks"])
+                p_df["sample"] = name
+                p_df["overall_r2"] = result.get("r2", np.nan)
+                frames.append(p_df)
+        except Exception as e:
+            warnings.warn(f"Constrained deconv failed for {name}: {e}")
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)

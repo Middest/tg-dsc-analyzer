@@ -3,12 +3,13 @@ name: tg-dsc-analysis
 description: >-
   TG-DSC thermal analysis for soil organic carbon stability. Covers TG/DTG curves, DSC heat flow,
   thermal pool partitioning (Filimonenko 2025), Coats-Redfern and iso-conversional kinetics,
-  DTG/DSC peak deconvolution, and thermal stability indices (T50, ED, TI, R50).
-  Use whenever the user asks about TG-DSC, thermogravimetric analysis, differential scanning
-  calorimetry, thermal stability of SOM/biochar/soil, or needs to process NETZSCH STA data.
+  free DTG/DSC peak deconvolution, pool-constrained Gaussian fitting, and thermal stability
+  indices (T50, ED, TI, R50). Use whenever the user asks about TG-DSC, thermogravimetric
+  analysis, differential scanning calorimetry, thermal stability of SOM/biochar/soil, or
+  needs to process NETZSCH STA data.
 ---
 
-# TG-DSC Thermal Analysis Skill
+# TG-DSC Thermal Analysis Skill (v0.2.0)
 
 Comprehensive TG-DSC data analysis toolkit for soil organic carbon thermal stability
 characterization, powered by the `tg-dsc-analyzer` Python package.
@@ -19,10 +20,10 @@ characterization, powered by the `tg-dsc-analyzer` Python package.
 - User needs to analyze NETZSCH STA instrument data
 - User wants thermal stability indices (T50, ED, TI, R50)
 - User needs kinetics analysis (Coats-Redfern, KAS, FWO)
-- User wants DTG/DSC peak deconvolution
+- User wants DTG/DSC peak deconvolution (free or pool-constrained)
 - User is characterizing SOM, biochar, or soil thermal properties
 
-## Setup (first use)
+## Setup
 
 ```bash
 pip install -e "C:/Users/Administrator/Desktop/tg-dsc-analyzer"
@@ -32,98 +33,117 @@ pip install -e "C:/Users/Administrator/Desktop/tg-dsc-analyzer"
 
 ### Phase 1: Data Discovery
 
-Ask the user for the data directory path. Scan for:
-- NETZSCH Excel exports (`.xlsx` with 9-column Time/Temp/TG/DTG/DSC format)
-- Generic CSV files with temperature and signal columns
-- `.sta` raw files (limited support)
+Scan the data directory for:
+- NETZSCH Proteus exports (`.xlsx`, 6-column with `##Temp.` header) — auto-detected
+- NETZSCH legacy exports (`.xlsx`, 9-column) — auto-detected
+- Generic CSV files
 
-Report back: number of samples found, temperature range, sample identifiers.
+Report: sample count, temperature range, instrument metadata.
 
 ### Phase 2: Configuration
-
-Confirm analysis parameters with the user:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | T_range | (190, 640) | SOM combustion range (Filimonenko 2025) |
-| Pools scheme | filimonenko2025 | Labile/Stable/Persistent/Refractory boundaries |
-| Kinetics method | Coats-Redfern | Single-rate or iso-conversional (needs multi-rate data) |
-| Deconvolution | off | Whether to fit DTG/DSC peaks |
-| Treatment mapping | user-provided | {sample_name: {Treatment, Biochar_rate, ...}} |
+| Pools scheme | filimonenko2025 | Labile/Stable/Persistent/Refractory |
+| Kinetics | Coats-Redfern | Single-rate; KAS/FWO need multi-rate data |
+| Deconvolution | pool-constrained | Free (n-peak) or constrained (1 peak per pool) |
+| Treatment mapping | auto-group | By filename prefix |
 
-### Phase 3: Analysis
-
-Run the pipeline:
+### Phase 3: Analysis Pipeline
 
 ```python
-from tgdsc.io import batch_read, merge_samples
+from tgdsc.io import batch_read
 from tgdsc.preprocess import smooth_savgol
 from tgdsc.stability import batch_report, compare_treatments
 from tgdsc.pools import pools_summary
-from tgdsc.kinetics import pool_kinetics, weighted_ea
+from tgdsc.kinetics import pool_kinetics
+from tgdsc.deconvolution import batch_deconvolve_pools
 from tgdsc.visualize import *
 from tgdsc.export import *
 
-# 1. Load
-samples = batch_read(data_dir, pattern="*.xlsx", reader="netzsch_excel")
+# 1. Load & preprocess
+samples = batch_read(data_dir, pattern="ExpDat_*.xlsx", recursive=True)
 samples = {k: smooth_savgol(v) for k, v in samples.items()}
 
-# 2. Analyze
-report = batch_report(samples, treatment_map, pools_scheme, T_range)
+# 2. Comprehensive thermal stability report
+report = batch_report(samples, treatment_map, T_range=(190, 640))
 report = compare_treatments(report, "CK")
 
-# 3. Visualize & Export
+# 3. Pool partitioning (Filimonenko 2025)
+pool_df = pools_summary(samples, treatment_map)
+
+# 4. Kinetics (Coats-Redfern per pool)
+kin_df = pool_kinetics(samples)
+
+# 5. Constrained pool deconvolution (v0.2.0)
+deconv_df = batch_deconvolve_pools(samples)
+
+# 6. Visualize
 plot_tg_dtg(samples, T_range, save_path="output/tg_dtg.svg")
-plot_pools_stacked(pools_summary(samples, treatment_map), save_path="output/pools.svg")
-to_excel({"Report": report, "Merged": merged}, "output/full_report.xlsx")
+plot_pools_stacked(pool_df, save_path="output/pools.svg")
+plot_constrained_deconvolution(fit_result, save_path="output/deconv.svg")
+plot_pool_peak_comparison(deconv_df, metric="T_center_C", save_path="output/peaks.svg")
+
+# 7. Export
+to_excel({"Report": report, "Pools": pool_df, "Kinetics": kin_df, "Deconv": deconv_df},
+         "output/full_report.xlsx")
 ```
 
 ### Phase 4: Deliverables
 
-The skill produces:
-1. **Comprehensive report table** — T50, ED, TI, SOM loss, Ea per pool
-2. **Pool analysis table** — mass loss, proportion, ED per thermal pool
-3. **Kinetics table** — Ea and R² per pool per sample
-4. **Figures** (SVG + PDF):
-   - TG + DTG dual-panel plot
-   - DSC heat flow curves
+1. **Comprehensive report** — T50, ED, TI, SOM loss, weighted Ea per sample
+2. **Pool analysis** — mass loss, proportion, ED per pool per sample
+3. **Kinetics table** — Coats-Redfern Ea and R² per pool
+4. **Constrained deconvolution** — peak center, width (FWHM), area per pool
+5. **Figures** (SVG + PDF):
+   - TG + DTG dual-panel
+   - DSC curves
    - Pool stacked bar chart
-   - Ea comparison bar chart
    - Stability index comparison
-   - DTG/DSC deconvolution (if enabled)
-5. **Export files** — Excel (.xlsx), CSV (.csv), JSON (.json)
+   - Constrained deconvolution with pool shading
+   - Pool peak center / FWHM comparison
+6. **Export** — Excel (multi-sheet), CSV, JSON
 
-## Key Methods Reference
+## Deconvolution Methods
 
-### Thermal Pool Schemes
+### Free Deconvolution (`deconvolve_dtg`)
+- Fits N unconstrained peaks to DTG/DSC curve
+- Use case: discovering unknown components
+- Limitation: peak numbering inconsistent across samples
+
+### Pool-Constrained Deconvolution (`deconvolve_pools`) — v0.2.0
+- Fits exactly 1 Gaussian peak per thermal pool with center bounded to pool range
+- Peak indices directly comparable: Peak 0 = labile, Peak 1 = stable, etc.
+- Reveals intra-pool peak shifts (e.g., POC labile 210°C vs MAOC 244°C)
+- Best used for: comparing peak center temperature and width between groups
+
+## Thermal Pool Schemes
 
 | Scheme | Labile | Stable | Persistent | Refractory |
 |--------|--------|--------|------------|------------|
-| filimonenko2025 | 190-390 | 390-490 | 490-590 | 590-640 |
-| an_125_650 | 125-390 | 390-490 | 490-590 | 590-650 |
+| filimonenko2025 | 190–390 | 390–490 | 490–590 | 590–640 |
+| an_125_650 | 125–390 | 390–490 | 490–590 | 590–650 |
 
-### Stability Indices
+## Supported Formats
 
-| Index | Formula | Meaning |
-|-------|---------|---------|
-| T50 | T at 50% cum. mass loss | Higher = more stable |
-| ED | DSC energy / TG mass loss (kJ/g OM) | Energy stored per unit OM |
-| TI | ML(350-550)/ML(200-550) | Higher = more recalcitrant |
-| Ea | Coats-Redfern activation energy | Decomposition energy barrier |
+| Format | Columns | Origin |
+|--------|---------|--------|
+| NETZSCH Proteus | 6 col (Temp/Time/DSC/Mass/DTG/Sens) | STA 449F5 export |
+| NETZSCH Legacy | 9 col (3x Time/Temp/Signal) | Older STA export |
+| Generic CSV | Auto-detected | Any |
 
-### Kinetics Methods
-
-- **Coats-Redfern (single-rate)**: First-order reaction, ln(-ln(1-α)/T²) vs 1/T
-- **KAS (multi-rate)**: ln(β/T²) = const - Ea/(RT), needs ≥3 heating rates
-- **FWO (multi-rate)**: ln(β) = const - 1.052·Ea/(RT), needs ≥3 heating rates
+Unit conversions handled automatically: DSC mW/mg → μW/mg, DTG %/min → %/°C.
 
 ## Validation
 
-For NETZSCH STA data from Haicheng soil study (CK/BC7.5/BC15/BC30):
-- T50: ±0.02% vs Excel manual calculation
-- Mass loss: ±0.08% vs Excel
-- ED: ±0.03% vs Excel
-- Ea: ±1.3% vs Excel
+Validated against manual Excel calculations (Haicheng paddy soil; CK/BC7.5/BC15/BC30):
+- T50: ±0.02%
+- Mass loss: ±0.08%
+- ED: ±0.03%
+- Ea: ±1.3%
+
+PG-POC MAOC dataset (43 samples, 2026): constrained deconvolution reveals +34°C labile peak shift in MAOC vs POC.
 
 ## Package Location
 
