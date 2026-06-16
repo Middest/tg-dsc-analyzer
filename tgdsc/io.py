@@ -209,9 +209,23 @@ def batch_read(
     read_fn = {"netzsch_excel": read_netzsch_excel, "csv": read_csv}[reader]
 
     results = {}
+    seen_names = set()
     for f in files:
-        # Use parent directory name as sample ID, or filename stem
-        name = f.parent.name if f.name.startswith("ExpDat_") else f.stem
+        # Use filename stem (strip "ExpDat_" prefix) as sample ID
+        if f.name.startswith("ExpDat_"):
+            name = f.stem.replace("ExpDat_", "")
+        else:
+            name = f.stem
+
+        # If all files are in the same directory, ensure unique names
+        if name in seen_names:
+            # Try parent_dir/filename to disambiguate
+            name = f"{f.parent.name}_{name}"
+        if name in seen_names:
+            # Last resort: full path hash
+            name = f"{name}_{abs(hash(str(f))) % 10000}"
+        seen_names.add(name)
+
         try:
             df = read_fn(f)
             if len(df) > 0:

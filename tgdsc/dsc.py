@@ -109,6 +109,11 @@ def energy_density(
     """Energy density ED = DSC integral / TG mass loss (kJ/g OM).
 
     This is a key parameter indicating the energy stored per unit organic matter lost.
+
+    Physical plausibility checks:
+      - ED should typically be 10–500 kJ/g OM for soil/biochar samples
+      - Negative ED indicates DSC baseline drift or integration error
+      - ED > 1000 kJ/g OM suggests near-zero mass loss (division instability)
     """
     from .tg import mass_loss as tg_mass_loss
 
@@ -116,14 +121,31 @@ def energy_density(
     mass_loss_pct = tg_mass_loss(df, T_range[0], T_range[1])
     mass_loss_frac = mass_loss_pct / 100  # percent -> fraction
 
+    warnings = []
+
     if mass_loss_frac <= 0:
-        return {"ED_kJ_g_OM": np.nan, "energy_J_g_soil": energy, "mass_loss_pct": mass_loss_pct}
+        warnings.append("mass_loss_zero")
+        return {
+            "ED_kJ_g_OM": np.nan, "energy_J_g_soil": energy,
+            "mass_loss_pct": mass_loss_pct,
+            "ed_warnings": warnings,
+        }
 
     # ED_kJ_g_OM = E(J/g_soil) / mass_loss_fraction(g_OM/g_soil) / 1000
     ed = energy / mass_loss_frac / 1000
+
+    if ed < 0:
+        warnings.append("ED_negative")
+    if abs(ed) > 1000:
+        warnings.append("ED_extreme")
+    if mass_loss_pct < 0.5:
+        warnings.append("mass_loss_very_low")
+
     return {
-        "ED_kJ_g_OM": float(ed),
+        "ED_kJ_g_OM": float(ed) if ed >= 0 else np.nan,
+        "ED_kJ_g_OM_raw": float(ed),  # keep raw value for debugging
         "energy_J_g_soil": energy,
         "mass_loss_pct": mass_loss_pct,
         "T_range": T_range,
+        "ed_warnings": ";".join(warnings) if warnings else "ok",
     }

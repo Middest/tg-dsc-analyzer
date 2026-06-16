@@ -288,7 +288,7 @@ def deconvolve_pools(
                 "pool": p["pool"], "T_low_C": T_low, "T_high_C": T_high,
                 "T_center_C": np.nan, "amplitude": np.nan, "sigma_C": np.nan,
                 "fwhm_C": np.nan, "area": np.nan, "r2": np.nan,
-                "area_fraction": np.nan,
+                "area_fraction": np.nan, "fit_quality": "too_few_points",
             })
             components_y.append(np.zeros_like(x_full))
             continue
@@ -296,13 +296,16 @@ def deconvolve_pools(
         T_mid = (T_low + T_high) / 2
         T_width = T_high - T_low
 
+        # Amplitude: estimate from max absolute DTG in pool range
+        amp_guess = float(np.max(np.abs(y_pool))) if len(y_pool) > 0 else 0.01
+        # Check for near-zero signal (flat DTG in this pool)
+        signal_range = float(np.max(y_pool) - np.min(y_pool)) if len(y_pool) > 1 else 0
+
         # Independent single-Gaussian fit for this pool
         model = model_cls(prefix="p_")
         params = Parameters()
         params.add("p_center", value=T_mid, min=T_low, max=T_high)
         params.add("p_sigma", value=T_width / 6, min=T_width / 20, max=T_width / 2)
-        # Amplitude: estimate from max absolute DTG in pool range
-        amp_guess = float(np.max(np.abs(y_pool))) if len(y_pool) > 0 else 0.01
         params.add("p_amplitude", value=amp_guess, min=0)
 
         with warnings.catch_warnings():
@@ -330,6 +333,18 @@ def deconvolve_pools(
         ss_tot = np.nansum((y_pool - np.nanmean(y_pool)) ** 2)
         pool_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
 
+        # Assess fit quality
+        if pool_r2 < 0:
+            fit_quality = "poor_negative_r2"
+        elif pool_r2 < 0.5:
+            fit_quality = "marginal"
+        elif pool_r2 < 0.8:
+            fit_quality = "acceptable"
+        else:
+            fit_quality = "good"
+        if signal_range < 1e-5:
+            fit_quality = "flat_signal"
+
         peaks.append({
             "pool": p["pool"],
             "T_low_C": T_low,
@@ -340,6 +355,7 @@ def deconvolve_pools(
             "fwhm_C": float(fwhm),
             "area": float(area),
             "r2": float(pool_r2) if not np.isnan(pool_r2) else None,
+            "fit_quality": fit_quality,
         })
 
         if not np.isnan(area):

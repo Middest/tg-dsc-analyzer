@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tg-dsc-analyzer"
-version = "0.2.0"
+version = "0.3.0"
 description = "TG-DSC thermal analysis toolkit for soil organic carbon stability characterization"
 readme = "README.md"
 license = {text = "MIT"}

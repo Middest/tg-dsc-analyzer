@@ -160,19 +160,39 @@ def compare_treatments(
     control_label: str = "CK",
     treatment_col: str = "Treatment",
 ) -> pd.DataFrame:
-    """Calculate relative response ratios vs control for all numeric columns."""
+    """Calculate relative response ratios vs control for all numeric columns.
+
+    If treatment_col not found, falls back to 'sample' column.
+    If control not found, returns original DataFrame with a warning.
+    """
+    # Fallback: use 'sample' as treatment column
+    if treatment_col not in report_df.columns:
+        if "sample" in report_df.columns:
+            treatment_col = "sample"
+        elif "Sample" in report_df.columns:
+            treatment_col = "Sample"
+        else:
+            print(f"compare_treatments: no '{treatment_col}' or 'sample' column found. "
+                  f"Pass a treatment_map to batch_report to add treatment annotations.")
+            return report_df
+
     ctrl = report_df[report_df[treatment_col] == control_label]
     if len(ctrl) == 0:
-        raise ValueError(f"Control '{control_label}' not found in column '{treatment_col}'")
+        available = report_df[treatment_col].unique().tolist()
+        print(f"compare_treatments: control '{control_label}' not found in "
+              f"'{treatment_col}'. Available: {available}")
+        return report_df
 
     ctrl_row = ctrl.iloc[0]
     numeric_cols = report_df.select_dtypes(include=[np.number]).columns
 
     result = report_df.copy()
     for col in numeric_cols:
-        result[f"{col}_RR_vs_{control_label}"] = (
-            (result[col] - ctrl_row[col]) / abs(ctrl_row[col]) * 100
-            if ctrl_row[col] != 0 else np.nan
-        )
+        if ctrl_row[col] != 0 and not np.isnan(ctrl_row[col]):
+            result[f"{col}_RR_vs_{control_label}"] = (
+                (result[col] - ctrl_row[col]) / abs(ctrl_row[col]) * 100
+            )
+        else:
+            result[f"{col}_RR_vs_{control_label}"] = np.nan
 
     return result

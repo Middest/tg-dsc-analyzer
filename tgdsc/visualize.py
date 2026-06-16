@@ -52,6 +52,22 @@ COLORS = {
     "BC30": "#e74c3c",
 }
 
+# Fallback color cycle for unknown treatments
+_FALLBACK_COLORS = [
+    "#2c3e50", "#3498db", "#e67e22", "#e74c3c",
+    "#27ae60", "#8e44ad", "#1abc9c", "#f39c12",
+    "#2980b9", "#c0392b", "#16a085", "#d35400",
+]
+
+
+def get_color(name: str) -> str:
+    """Return color for a treatment name, with fallback for unknowns."""
+    if name in COLORS:
+        return COLORS[name]
+    # Use hash for deterministic assignment
+    idx = hash(name) % len(_FALLBACK_COLORS)
+    return _FALLBACK_COLORS[idx]
+
 POOL_FILLS = {
     "labile": "#fdebd0",
     "stable": "#d5f5e3",
@@ -67,10 +83,15 @@ def _save(fig, save_path: str | Path | None, formats: list[str] | None = None):
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     if formats is None:
-        formats = ["svg", "pdf"]
+        # Use extension from save_path, or default to svg+pdf
+        ext = save_path.suffix.lstrip(".").lower()
+        if ext in ("png", "jpg", "jpeg", "tiff", "tif", "svg", "pdf"):
+            formats = [ext]
+        else:
+            formats = ["svg", "pdf"]
     for fmt in formats:
         fpath = save_path.with_suffix(f".{fmt}")
-        fig.savefig(fpath, format=fmt)
+        fig.savefig(fpath, format=fmt, dpi=600 if fmt == "png" else None)
     plt.close(fig)
 
 
@@ -89,7 +110,7 @@ def plot_tg(
 
     for name, df in samples.items():
         label = name
-        color = COLORS.get(name, None)
+        color = get_color(name)
         ax.plot(df["Temp_C"], df["TG_percent"], label=label, color=color, lw=0.8)
 
     if T_range_highlight:
@@ -117,7 +138,7 @@ def plot_dtg(
     fig, ax = plt.subplots(figsize=figsize)
 
     for name, df in samples.items():
-        color = COLORS.get(name, None)
+        color = get_color(name)
         dtg = df["DTG_percent_per_C"].values
         T = df["Temp_C"].values
         if smoothing_window:
@@ -147,7 +168,7 @@ def plot_tg_dtg(
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
 
     for name, df in samples.items():
-        color = COLORS.get(name, None)
+        color = get_color(name)
         ax1.plot(df["Temp_C"], df["TG_percent"], label=name, color=color, lw=0.8)
 
         from scipy.signal import savgol_filter
@@ -183,7 +204,7 @@ def plot_dsc(
     fig, ax = plt.subplots(figsize=figsize)
 
     for name, df in samples.items():
-        color = COLORS.get(name, None)
+        color = get_color(name)
         ax.plot(df["Temp_C"], df["DSC_uW_per_mg"], label=name, color=color, lw=0.8)
 
     ax.axhline(0, ls="--", color="gray", lw=0.3)
